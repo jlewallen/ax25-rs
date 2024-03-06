@@ -196,6 +196,12 @@ pub struct SetAsynchronousBalancedMode {
     pub poll: bool,
 }
 
+/// SABME Unnumbered (U) frame
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetAsynchronousBalancedModeExtended {
+    pub poll: bool,
+}
+
 /// DISC Unnumbered (U) frame
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Disconnect {
@@ -255,6 +261,7 @@ pub enum FrameContent {
     ReceiveNotReady(ReceiveNotReady),
     Reject(Reject),
     SetAsynchronousBalancedMode(SetAsynchronousBalancedMode),
+    SetAsynchronousBalancedModeExtended(SetAsynchronousBalancedModeExtended),
     Disconnect(Disconnect),
     DisconnectedMode(DisconnectedMode),
     UnnumberedAcknowledge(UnnumberedAcknowledge),
@@ -298,6 +305,11 @@ impl FrameContent {
             FrameContent::SetAsynchronousBalancedMode(ref sabm) => {
                 let mut c: u8 = 0b0010_1111;
                 c |= if sabm.poll { 1 << 4 } else { 0 };
+                encoded.push(c);
+            }
+            FrameContent::SetAsynchronousBalancedModeExtended(ref sabme) => {
+                let mut c: u8 = 0b0110_1111;
+                c |= if sabme.poll { 1 << 4 } else { 0 };
                 encoded.push(c);
             }
             FrameContent::Disconnect(ref disc) => {
@@ -637,6 +649,11 @@ fn parse_u_frame(bytes: &[u8]) -> Result<FrameContent, FrameParseError> {
     match c & 0b1110_1111 {
         0b0010_1111 => Ok(FrameContent::SetAsynchronousBalancedMode(
             SetAsynchronousBalancedMode {
+                poll: poll_or_final,
+            },
+        )),
+        0b0110_1111 => Ok(FrameContent::SetAsynchronousBalancedModeExtended(
+            SetAsynchronousBalancedModeExtended {
                 poll: poll_or_final,
             },
         )),
