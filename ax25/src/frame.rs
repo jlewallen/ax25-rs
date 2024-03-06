@@ -190,6 +190,13 @@ pub struct Reject {
     pub poll_or_final: bool,
 }
 
+/// SREJ Supervisory (S) frame
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectiveReject {
+    pub receive_sequence: u8,
+    pub poll_or_final: bool,
+}
+
 /// SABM Unnumbered (U) frame
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetAsynchronousBalancedMode {
@@ -260,6 +267,7 @@ pub enum FrameContent {
     ReceiveReady(ReceiveReady),
     ReceiveNotReady(ReceiveNotReady),
     Reject(Reject),
+    SelectiveReject(SelectiveReject),
     SetAsynchronousBalancedMode(SetAsynchronousBalancedMode),
     SetAsynchronousBalancedModeExtended(SetAsynchronousBalancedModeExtended),
     Disconnect(Disconnect),
@@ -300,6 +308,12 @@ impl FrameContent {
                 let mut c: u8 = 0b0000_1001;
                 c |= if rej.poll_or_final { 1 << 4 } else { 0 };
                 c |= (rej.receive_sequence & 0b0000_0111) << 5;
+                encoded.push(c);
+            }
+            FrameContent::SelectiveReject(ref srej) => {
+                let mut c: u8 = 0b0000_1101;
+                c |= if srej.poll_or_final { 1 << 4 } else { 0 };
+                c |= (srej.receive_sequence & 0b0000_0111) << 5;
                 encoded.push(c);
             }
             FrameContent::SetAsynchronousBalancedMode(ref sabm) => {
@@ -630,6 +644,10 @@ fn parse_s_frame(bytes: &[u8]) -> Result<FrameContent, FrameParseError> {
             poll_or_final,
         })),
         0b0000_1001 => Ok(FrameContent::Reject(Reject {
+            receive_sequence: n_r,
+            poll_or_final,
+        })),
+        0b0000_1101 => Ok(FrameContent::SelectiveReject(SelectiveReject {
             receive_sequence: n_r,
             poll_or_final,
         })),
