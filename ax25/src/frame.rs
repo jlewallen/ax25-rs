@@ -246,6 +246,11 @@ pub struct FrameReject {
     pub command_response: CommandResponse,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExchangeIdentification {
+    pub poll_or_final: bool,
+}
+
 /// UI Unnumbered Information frame
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnnumberedInformation {
@@ -274,6 +279,7 @@ pub enum FrameContent {
     DisconnectedMode(DisconnectedMode),
     UnnumberedAcknowledge(UnnumberedAcknowledge),
     FrameReject(FrameReject),
+    ExchangeIdentification(ExchangeIdentification),
     UnnumberedInformation(UnnumberedInformation),
     UnknownContent(UnknownContent),
 }
@@ -371,6 +377,11 @@ impl FrameContent {
             }
             FrameContent::UnknownContent(ref uc) => {
                 encoded.extend(&uc.raw);
+            }
+            FrameContent::ExchangeIdentification(ref xid) => {
+                let mut c: u8 = 0b1010_1111;
+                c |= if xid.poll_or_final { 1 << 4 } else { 0 };
+                encoded.push(c);
             }
         }
 
@@ -686,6 +697,7 @@ fn parse_u_frame(bytes: &[u8]) -> Result<FrameContent, FrameParseError> {
         })),
         0b1000_0111 => parse_frmr_frame(bytes),
         0b0000_0011 => parse_ui_frame(bytes),
+        0b1010_1111 => parse_xid_frame(bytes),
         _ => Err(FrameParseError::UnrecognisedUFieldType),
     }
 }
@@ -700,6 +712,14 @@ fn parse_ui_frame(bytes: &[u8]) -> Result<FrameContent, FrameParseError> {
         pid: ProtocolIdentifier::from_byte(bytes[1]),
         info: bytes[2..].to_vec(),
     }))
+}
+
+fn parse_xid_frame(bytes: &[u8]) -> Result<FrameContent, FrameParseError> {
+    Ok(FrameContent::ExchangeIdentification(
+        ExchangeIdentification {
+            poll_or_final: bytes[0] & 0b0001_0000 > 0,
+        },
+    ))
 }
 
 fn parse_frmr_frame(bytes: &[u8]) -> Result<FrameContent, FrameParseError> {
