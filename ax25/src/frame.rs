@@ -259,6 +259,13 @@ pub struct UnnumberedInformation {
     pub poll_or_final: bool,
 }
 
+/// Test frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Test {
+    pub poll_or_final: bool,
+    pub info: Vec<u8>,
+}
+
 /// Placeholder for when the Address part was parseable but not the control field
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnknownContent {
@@ -281,6 +288,7 @@ pub enum FrameContent {
     FrameReject(FrameReject),
     ExchangeIdentification(ExchangeIdentification),
     UnnumberedInformation(UnnumberedInformation),
+    Test(Test),
     UnknownContent(UnknownContent),
 }
 
@@ -375,13 +383,19 @@ impl FrameContent {
                 encoded.push(ui.pid.to_byte());
                 encoded.extend(&ui.info);
             }
-            FrameContent::UnknownContent(ref uc) => {
-                encoded.extend(&uc.raw);
-            }
             FrameContent::ExchangeIdentification(ref xid) => {
                 let mut c: u8 = 0b1010_1111;
                 c |= if xid.poll_or_final { 1 << 4 } else { 0 };
                 encoded.push(c);
+            }
+            FrameContent::Test(ref test) => {
+                let mut c: u8 = 0b1110_0011;
+                c |= if test.poll_or_final { 1 << 4 } else { 0 };
+                encoded.push(c);
+                encoded.extend(&test.info);
+            }
+            FrameContent::UnknownContent(ref uc) => {
+                encoded.extend(&uc.raw);
             }
         }
 
@@ -698,6 +712,7 @@ fn parse_u_frame(bytes: &[u8]) -> Result<FrameContent, FrameParseError> {
         0b1000_0111 => parse_frmr_frame(bytes),
         0b0000_0011 => parse_ui_frame(bytes),
         0b1010_1111 => parse_xid_frame(bytes),
+        0b1110_0011 => parse_test_frame(bytes),
         _ => Err(FrameParseError::UnrecognisedUFieldType),
     }
 }
@@ -720,6 +735,13 @@ fn parse_xid_frame(bytes: &[u8]) -> Result<FrameContent, FrameParseError> {
             poll_or_final: bytes[0] & 0b0001_0000 > 0,
         },
     ))
+}
+
+fn parse_test_frame(bytes: &[u8]) -> Result<FrameContent, FrameParseError> {
+    Ok(FrameContent::Test(Test {
+        poll_or_final: bytes[0] & 0b0001_0000 > 0,
+        info: bytes[2..].to_vec(),
+    }))
 }
 
 fn parse_frmr_frame(bytes: &[u8]) -> Result<FrameContent, FrameParseError> {
