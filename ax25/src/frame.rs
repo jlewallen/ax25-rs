@@ -54,6 +54,7 @@ pub enum FrameParseError {
     UnrecognisedSFieldType,
     UnrecognisedUFieldType,
     WrongSizeFrmrInfo,
+    Xid,
 }
 
 #[cfg(feature = "std")]
@@ -81,6 +82,7 @@ impl fmt::Display for FrameParseError {
             Self::UnrecognisedUFieldType => write!(f, "Unrecognised U field type"),
             Self::UnrecognisedSFieldType => write!(f, "Unrecognised S field type"),
             Self::WrongSizeFrmrInfo => write!(f, "Wrong size for FRMR info"),
+            Self::Xid => write!(f, "Unexpected XID format"),
         }
     }
 }
@@ -247,8 +249,28 @@ pub struct FrameReject {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectiveRejectMode {
+    Multi,
+    Single,
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuloMode {
+    Modulo8,
+    Modulo128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExchangeIdentification {
     pub poll_or_final: bool,
+    pub full_duplex: Option<bool>,
+    pub srej_mode: Option<SelectiveRejectMode>,
+    pub modulo: Option<ModuloMode>,
+    pub i_field_length_rx: Option<u32>,
+    pub window_size_rx: Option<u32>,
+    pub ack_timer: Option<u32>,
+    pub retries: Option<u32>,
 }
 
 /// UI Unnumbered Information frame
@@ -387,6 +409,91 @@ impl FrameContent {
                 let mut c: u8 = 0b1010_1111;
                 c |= if xid.poll_or_final { 1 << 4 } else { 0 };
                 encoded.push(c);
+
+                encoded.push(XID_FORMAT_IDENTIFIER);
+                encoded.push(XID_GROUP_IDENTIFIER);
+
+                let groups_length = 4
+                    + 5
+                    + xid.i_field_length_rx.map(|_| 4).unwrap_or_default()
+                    + xid.window_size_rx.map(|_| 3).unwrap_or_default()
+                    + xid.ack_timer.map(|_| 4).unwrap_or_default()
+                    + xid.retries.map(|_| 3).unwrap_or_default();
+
+                // Groups length.
+                encoded.push(0);
+                encoded.push(groups_length as u8);
+
+                encoded.push(PI_CLASSES_OF_PROCEDURES);
+                encoded.push(2);
+
+                let value = PV_CLASSES_PROCEDURES_BALANCED_ABM
+                    | match xid.full_duplex {
+                        Some(true) => PV_CLASSES_PROCEDURES_FULL_DUPLEX,
+                        Some(false) => PV_CLASSES_PROCEDURES_HALF_DUPLEX,
+                        None => PV_CLASSES_PROCEDURES_HALF_DUPLEX,
+                    };
+
+                encoded.push((value >> 8) as u8);
+                encoded.push(value as u8);
+
+                encoded.push(PI_HDLC_OPTIONAL_FUNCTIONS);
+                encoded.push(3);
+
+                let value = PV_HDLC_OPTIONAL_FUNCTIONS_EXTENDED_ADDRESS
+                    | PV_HDLC_OPTIONAL_FUNCTIONS_TEST_CMD_RESP
+                    | PV_HDLC_OPTIONAL_FUNCTIONS_16_BIT_FCS
+                    | PV_HDLC_OPTIONAL_FUNCTIONS_SYNCHRONOUS_TX;
+
+                let value = value
+                    | match xid.srej_mode {
+                        Some(SelectiveRejectMode::Multi) => {
+                            PV_HDLC_OPTIONAL_FUNCTIONS_MULTI_SREJ_CMD_RESP
+                        }
+                        Some(SelectiveRejectMode::Single) => {
+                            PV_HDLC_OPTIONAL_FUNCTIONS_SREJ_CMD_RESP
+                        }
+                        Some(SelectiveRejectMode::None) | None => {
+                            PV_HDLC_OPTIONAL_FUNCTIONS_REJ_CMD_RESP
+                        }
+                    };
+
+                let value = value
+                    | match xid.modulo {
+                        Some(ModuloMode::Modulo128) => PV_HDLC_OPTIONAL_FUNCTIONS_MODULO_128,
+                        Some(ModuloMode::Modulo8) | None => PV_HDLC_OPTIONAL_FUNCTIONS_MODULO_8,
+                    };
+
+                encoded.push((value >> 16) as u8);
+                encoded.push((value >> 8) as u8);
+                encoded.push(value as u8);
+
+                if let Some(i_field_length_rx) = xid.i_field_length_rx {
+                    encoded.push(PI_I_FIELD_LENGTH_RX);
+                    encoded.push(2);
+                    let value = i_field_length_rx * 8;
+                    encoded.push((value >> 8) as u8);
+                    encoded.push(value as u8);
+                }
+
+                if let Some(window_size_rx) = xid.window_size_rx {
+                    encoded.push(PI_WINDOW_SIZE_RX);
+                    encoded.push(1);
+                    encoded.push(window_size_rx as u8);
+                }
+
+                if let Some(ack_timer) = xid.ack_timer {
+                    encoded.push(PI_ACK_TIMER);
+                    encoded.push(2);
+                    encoded.push((ack_timer >> 8) as u8);
+                    encoded.push(ack_timer as u8);
+                }
+
+                if let Some(retries) = xid.retries {
+                    encoded.push(PI_RETRIES);
+                    encoded.push(1);
+                    encoded.push(retries as u8);
+                }
             }
             FrameContent::Test(ref test) => {
                 let mut c: u8 = 0b1110_0011;
@@ -729,10 +836,167 @@ fn parse_ui_frame(bytes: &[u8]) -> Result<FrameContent, FrameParseError> {
     }))
 }
 
+const XID_FORMAT_IDENTIFIER: u8 = 0x82;
+const XID_GROUP_IDENTIFIER: u8 = 0x80;
+
+const PI_CLASSES_OF_PROCEDURES: u8 = 2;
+const PI_HDLC_OPTIONAL_FUNCTIONS: u8 = 3;
+const PI_I_FIELD_LENGTH_RX: u8 = 6;
+const PI_WINDOW_SIZE_RX: u8 = 8;
+const PI_ACK_TIMER: u8 = 9;
+const PI_RETRIES: u8 = 10;
+
+const PV_CLASSES_PROCEDURES_BALANCED_ABM: u16 = 0x0100;
+const PV_CLASSES_PROCEDURES_HALF_DUPLEX: u16 = 0x2000;
+const PV_CLASSES_PROCEDURES_FULL_DUPLEX: u16 = 0x4000;
+
+const PV_HDLC_OPTIONAL_FUNCTIONS_REJ_CMD_RESP: u32 = 0x020000;
+const PV_HDLC_OPTIONAL_FUNCTIONS_SREJ_CMD_RESP: u32 = 0x040000;
+const PV_HDLC_OPTIONAL_FUNCTIONS_EXTENDED_ADDRESS: u32 = 0x800000;
+
+const PV_HDLC_OPTIONAL_FUNCTIONS_MODULO_8: u32 = 0x000400;
+const PV_HDLC_OPTIONAL_FUNCTIONS_MODULO_128: u32 = 0x000800;
+const PV_HDLC_OPTIONAL_FUNCTIONS_TEST_CMD_RESP: u32 = 0x002000;
+const PV_HDLC_OPTIONAL_FUNCTIONS_16_BIT_FCS: u32 = 0x008000;
+
+const PV_HDLC_OPTIONAL_FUNCTIONS_MULTI_SREJ_CMD_RESP: u32 = 0x000020;
+
+const PV_HDLC_OPTIONAL_FUNCTIONS_SYNCHRONOUS_TX: u32 = 0x000002;
+
 fn parse_xid_frame(bytes: &[u8]) -> Result<FrameContent, FrameParseError> {
+    let mut full_duplex = None;
+    let mut srej_mode = None;
+    let mut modulo = None;
+    let mut i_field_length_rx = None;
+    let mut window_size_rx = None;
+    let mut ack_timer = None;
+    let mut retries = None;
+
+    let info = bytes[1..].to_vec();
+    if info.len() < 4 {
+        return Err(FrameParseError::Xid);
+    }
+
+    let (ids, info) = info.split_at(2);
+    if ids[0] != XID_FORMAT_IDENTIFIER {
+        return Err(FrameParseError::Xid);
+    }
+    if ids[1] != XID_GROUP_IDENTIFIER {
+        return Err(FrameParseError::Xid);
+    }
+    let (group_len, mut info) = info.split_at(2);
+
+    let group_len = u16::from_be_bytes(group_len.try_into().map_err(|_| FrameParseError::Xid)?);
+
+    if info.len() != group_len as usize {
+        return Err(FrameParseError::Xid);
+    }
+
+    while !info.is_empty() {
+        let header;
+
+        (header, info) = info.split_at(2);
+        let indicator = header[0];
+        let value_length = header[1];
+
+        let vbytes;
+        (vbytes, info) = info.split_at(value_length as usize);
+
+        let value = match value_length {
+            4 => {
+                (vbytes[0] as u32) << 24
+                    | (vbytes[1] as u32) << 16
+                    | (vbytes[2] as u32) << 8
+                    | (vbytes[3] as u32)
+            }
+            3 => (vbytes[0] as u32) << 16 | (vbytes[1] as u32) << 8 | (vbytes[2] as u32),
+            2 => (vbytes[0] as u32) << 8 | (vbytes[1] as u32),
+            1 => vbytes[0] as u32,
+            _ => return Err(FrameParseError::Xid),
+        };
+
+        match indicator {
+            PI_CLASSES_OF_PROCEDURES => {
+                if (value as u16 & PV_CLASSES_PROCEDURES_BALANCED_ABM) == 0 {
+                    // TODO warn
+                }
+                if (value as u16 & PV_CLASSES_PROCEDURES_FULL_DUPLEX) == 0
+                    && (value as u16 & PV_CLASSES_PROCEDURES_HALF_DUPLEX) != 0
+                {
+                    full_duplex = Some(false);
+                } else if (value as u16 & PV_CLASSES_PROCEDURES_FULL_DUPLEX) != 0
+                    && (value as u16 & PV_CLASSES_PROCEDURES_HALF_DUPLEX) == 0
+                {
+                    full_duplex = Some(true);
+                } else {
+                    // TODO warn
+                }
+            }
+            PI_HDLC_OPTIONAL_FUNCTIONS => {
+                if value & PV_HDLC_OPTIONAL_FUNCTIONS_MULTI_SREJ_CMD_RESP != 0 {
+                    srej_mode = Some(SelectiveRejectMode::Multi);
+                } else if value & PV_HDLC_OPTIONAL_FUNCTIONS_SREJ_CMD_RESP != 0 {
+                    srej_mode = Some(SelectiveRejectMode::Single);
+                } else if value & PV_HDLC_OPTIONAL_FUNCTIONS_REJ_CMD_RESP != 0 {
+                    srej_mode = Some(SelectiveRejectMode::None);
+                } else {
+                    // TODO warn
+                }
+
+                if value & PV_HDLC_OPTIONAL_FUNCTIONS_MODULO_8 != 0
+                    && value & PV_HDLC_OPTIONAL_FUNCTIONS_MODULO_128 == 0
+                {
+                    modulo = Some(ModuloMode::Modulo8);
+                }
+                if value & PV_HDLC_OPTIONAL_FUNCTIONS_MODULO_8 == 0
+                    && value & PV_HDLC_OPTIONAL_FUNCTIONS_MODULO_128 != 0
+                {
+                    modulo = Some(ModuloMode::Modulo128);
+                } else {
+                    // TODO warn
+                }
+
+                if value & PV_HDLC_OPTIONAL_FUNCTIONS_EXTENDED_ADDRESS == 0 {
+                    // TODO warn
+                }
+                if value & PV_HDLC_OPTIONAL_FUNCTIONS_TEST_CMD_RESP == 0 {
+                    // TODO warn
+                }
+                if value & PV_HDLC_OPTIONAL_FUNCTIONS_16_BIT_FCS == 0 {
+                    // TODO warn
+                }
+                if value & PV_HDLC_OPTIONAL_FUNCTIONS_SYNCHRONOUS_TX == 0 {
+                    // TODO warn
+                }
+            }
+            PI_I_FIELD_LENGTH_RX => {
+                i_field_length_rx = Some(value / 8);
+            }
+            PI_WINDOW_SIZE_RX => {
+                window_size_rx = Some(value);
+            }
+            PI_ACK_TIMER => {
+                ack_timer = Some(value);
+            }
+            PI_RETRIES => {
+                retries = Some(value);
+            }
+            _ => {
+                // TODO warn
+            }
+        }
+    }
+
     Ok(FrameContent::ExchangeIdentification(
         ExchangeIdentification {
             poll_or_final: bytes[0] & 0b0001_0000 > 0,
+            full_duplex,
+            srej_mode,
+            modulo,
+            i_field_length_rx,
+            window_size_rx,
+            ack_timer,
+            retries,
         },
     ))
 }
